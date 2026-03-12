@@ -1,0 +1,415 @@
+# Default values for flowforge.
+
+# -- Global settings
+global:
+  # -- Image pull secrets for all deployments
+  imagePullSecrets: []
+  # -- Storage class override for all PVCs
+  storageClass: ""
+
+# -- Override chart name
+nameOverride: ""
+# -- Override full name
+fullnameOverride: ""
+
+# =============================================================================
+# Server Configuration
+# =============================================================================
+server:
+  # -- Number of server replicas
+  replicaCount: 2
+
+  image:
+    # -- Server image repository
+    repository: flowforge/server
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+    # -- Image tag (defaults to chart appVersion)
+    tag: ""
+
+  # -- Service account configuration
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+
+  # -- Pod annotations
+  podAnnotations: {}
+
+  # -- Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+
+  # -- Container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # -- Server port configuration
+  ports:
+    http: 8080
+    grpc: 9090
+    debug: 6060
+
+  # -- Resource limits and requests
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # -- Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  # -- Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # -- Startup probe configuration
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30
+
+  # -- Node selector
+  nodeSelector: {}
+
+  # -- Tolerations
+  tolerations: []
+
+  # -- Affinity rules
+  affinity: {}
+
+  # -- Deployment strategy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  # -- Extra environment variables
+  extraEnv: []
+
+  # -- Extra volume mounts
+  extraVolumeMounts: []
+
+  # -- Extra volumes
+  extraVolumes: []
+
+# =============================================================================
+# Worker Configuration
+# =============================================================================
+worker:
+  # -- Number of worker replicas
+  replicaCount: 2
+
+  image:
+    # -- Worker image repository
+    repository: flowforge/worker
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+    # -- Image tag (defaults to chart appVersion)
+    tag: ""
+
+  # -- Service account configuration
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+
+  # -- Pod annotations
+  podAnnotations: {}
+
+  # -- Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+
+  # -- Container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # -- Resource limits and requests
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  # -- Worker-specific configuration
+  config:
+    # -- Maximum concurrent tasks per worker
+    maxConcurrent: 10
+    # -- Heartbeat interval
+    heartbeatInterval: "15s"
+
+  # -- Autoscaling configuration
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 60
+        policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 60
+          - type: Pods
+            value: 4
+            periodSeconds: 60
+        selectPolicy: Max
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        policies:
+          - type: Percent
+            value: 25
+            periodSeconds: 120
+        selectPolicy: Min
+
+  # -- Termination grace period (seconds)
+  terminationGracePeriodSeconds: 60
+
+  # -- Node selector
+  nodeSelector: {}
+
+  # -- Tolerations
+  tolerations: []
+
+  # -- Affinity rules
+  affinity: {}
+
+  # -- Extra environment variables
+  extraEnv: []
+
+  # -- Extra volume mounts
+  extraVolumeMounts: []
+
+  # -- Extra volumes
+  extraVolumes: []
+
+# =============================================================================
+# Service Configuration
+# =============================================================================
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- HTTP port
+  httpPort: 80
+  # -- gRPC port
+  grpcPort: 9090
+
+# =============================================================================
+# Ingress Configuration
+# =============================================================================
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: nginx
+  # -- Ingress annotations
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  # -- Ingress hosts
+  hosts:
+    - host: flowforge.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration
+  tls: []
+  #  - secretName: flowforge-tls
+  #    hosts:
+  #      - flowforge.example.com
+
+# =============================================================================
+# Configuration
+# =============================================================================
+config:
+  # -- Log level (debug, info, warn, error)
+  logLevel: "info"
+  # -- Log format (json, text)
+  logFormat: "json"
+
+  # -- Feature flags
+  features:
+    webhooks: true
+    approvalTasks: true
+    parallelExecution: true
+
+  # -- Retention settings
+  retention:
+    runDays: 90
+    logDays: 30
+
+  # -- Rate limiting
+  rateLimit:
+    api: 100
+    webhook: 50
+
+# =============================================================================
+# Secrets
+# =============================================================================
+secrets:
+  # -- Create secrets (set to false if using external secrets)
+  create: true
+
+  # -- PostgreSQL credentials
+  postgres:
+    user: "flowforge"
+    password: "CHANGE_ME_IN_PRODUCTION"
+
+  # -- Database connection URL (auto-generated if empty)
+  databaseURL: ""
+
+  # -- Redis connection URL (auto-generated if empty)
+  redisURL: ""
+
+  # -- JWT signing secret
+  jwtSecret: "CHANGE_ME_TO_A_RANDOM_64_CHAR_STRING"
+
+  # -- API encryption key
+  encryptionKey: "CHANGE_ME_TO_A_RANDOM_32_BYTE_HEX"
+
+  # -- Use existing secret instead of creating one
+  existingSecret: ""
+
+# =============================================================================
+# PostgreSQL (Bitnami subchart)
+# =============================================================================
+postgresql:
+  # -- Enable built-in PostgreSQL
+  enabled: true
+  auth:
+    username: flowforge
+    password: "CHANGE_ME_IN_PRODUCTION"
+    database: flowforge
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+# =============================================================================
+# Redis (Bitnami subchart)
+# =============================================================================
+redis:
+  # -- Enable built-in Redis
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# =============================================================================
+# NATS (NATS subchart)
+# =============================================================================
+nats:
+  # -- Enable built-in NATS
+  enabled: true
+  config:
+    jetstream:
+      enabled: true
+      memStorage:
+        enabled: true
+        size: 256Mi
+      fileStorage:
+        enabled: true
+        size: 5Gi
+
+# =============================================================================
+# Monitoring
+# =============================================================================
+monitoring:
+  # -- Enable Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+  # -- Enable Grafana dashboards ConfigMap
+  grafanaDashboards:
+    enabled: false
+    labels:
+      grafana_dashboard: "1"
+
+# =============================================================================
+# Network Policies
+# =============================================================================
+networkPolicy:
+  # -- Enable network policies
+  enabled: false
+
+# =============================================================================
+# Pod Disruption Budgets
+# =============================================================================
+podDisruptionBudget:
+  server:
+    enabled: true
+    minAvailable: 1
+  worker:
+    enabled: true
+    minAvailable: 1
+
+# =============================================================================
+# Database Migrations
+# =============================================================================
+migrations:
+  # -- Run migrations as init container
+  enabled: true
+  image:
+    repository: flowforge/server
+    pullPolicy: IfNotPresent
+    tag: ""

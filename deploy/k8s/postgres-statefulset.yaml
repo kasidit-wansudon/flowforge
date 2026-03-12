@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: flowforge-postgres
+  namespace: flowforge
+  labels:
+    app.kubernetes.io/name: flowforge-postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: flowforge
+spec:
+  serviceName: flowforge-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flowforge-postgres
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flowforge-postgres
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: flowforge
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: flowforge
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: flowforge-secrets
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowforge-secrets
+                  key: postgres-password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - flowforge
+                - -d
+                - flowforge
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - flowforge
+                - -d
+                - flowforge
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+      terminationGracePeriodSeconds: 60
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app.kubernetes.io/name: flowforge-postgres
+          app.kubernetes.io/component: database
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flowforge-postgres
+  namespace: flowforge
+  labels:
+    app.kubernetes.io/name: flowforge-postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: flowforge
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: flowforge-postgres
+    app.kubernetes.io/component: database
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP

@@ -1,0 +1,57 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build
+dist/
+build/
+*.out
+
+# Go
+vendor/
+go.sum
+
+# Test
+*.test
+coverage.out
+coverage.html
+*.prof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+
+# Docker
+.docker/
+
+# Logs
+*.log
+logs/
+
+# Temp
+tmp/
+.tmp/
+
+# Generated protobuf
+proto/*.pb.go

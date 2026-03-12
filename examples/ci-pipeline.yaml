@@ -1,0 +1,182 @@
+# CI Pipeline Workflow
+# Checkout -> Lint -> Test (parallel: unit + integration) -> Build -> Deploy
+id: ci-pipeline
+name: CI/CD Pipeline
+description: >
+  Continuous integration pipeline with linting, parallel test execution,
+  artifact building, and conditional deployment.
+version: 1
+
+triggers:
+  - type: webhook
+    config:
+      path: /hooks/ci
+      secret: "${CI_WEBHOOK_SECRET}"
+      events:
+        - push
+        - pull_request
+  - type: event
+    config:
+      pattern: "repo.push.main"
+
+timeout: "30m"
+
+metadata:
+  team: platform
+  environment: ci
+  owner: devops
+
+tasks:
+  - id: checkout
+    name: Checkout Source
+    type: script
+    config:
+      command: git
+      args:
+        - clone
+        - "--depth=1"
+        - "--branch=${BRANCH:-main}"
+        - "${REPO_URL}"
+        - /workspace/src
+      working_dir: /workspace
+      env:
+        REPO_URL: "${params.repo_url}"
+        BRANCH: "${params.branch}"
+    timeout: "5m"
+    retry:
+      max_retries: 2
+      initial_delay: "5s"
+      strategy: fixed
+
+  - id: lint
+    name: Run Linters
+    type: script
+    config:
+      command: golangci-lint
+      args:
+        - run
+        - "--timeout=5m"
+        - "--config=.golangci.yml"
+        - "./..."
+      working_dir: /workspace/src
+    depends_on:
+      - checkout
+    timeout: "10m"
+    retry:
+      max_retries: 1
+      initial_delay: "10s"
+      strategy: fixed
+
+  - id: unit-tests
+    name: Run Unit Tests
+    type: script
+    config:
+      command: go
+      args:
+        - test
+        - "-v"
+        - "-race"
+        - "-coverprofile=coverage-unit.out"
+        - "-count=1"
+        - "-timeout=10m"
+        - "./..."
+      working_dir: /workspace/src
+      env:
+        CGO_ENABLED: "1"
+        GOFLAGS: "-mod=readonly"
+    depends_on:
+      - lint
+    timeout: "15m"
+    retry:
+      max_retries: 2
+      initial_delay: "10s"
+      max_delay: "30s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: integration-tests
+    name: Run Integration Tests
+    type: script
+    config:
+      command: go
+      args:
+        - test
+        - "-v"
+        - "-tags=integration"
+        - "-coverprofile=coverage-integration.out"
+        - "-count=1"
+        - "-timeout=15m"
+        - "./test/integration/..."
+      working_dir: /workspace/src
+      env:
+        DATABASE_URL: "${params.database_url}"
+        REDIS_URL: "${params.redis_url}"
+        NATS_URL: "${params.nats_url}"
+        TEST_ENV: integration
+    depends_on:
+      - lint
+    timeout: "20m"
+    retry:
+      max_retries: 2
+      initial_delay: "15s"
+      max_delay: "60s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: build
+    name: Build Docker Image
+    type: script
+    config:
+      command: docker
+      args:
+        - build
+        - "--tag=${IMAGE_TAG}"
+        - "--build-arg=VERSION=${VERSION}"
+        - "--build-arg=COMMIT=${COMMIT_SHA}"
+        - "--file=Dockerfile"
+        - "."
+      working_dir: /workspace/src
+      env:
+        IMAGE_TAG: "flowforge:${params.version}-${params.commit_sha:0:7}"
+        VERSION: "${params.version}"
+        COMMIT_SHA: "${params.commit_sha}"
+        DOCKER_BUILDKIT: "1"
+    depends_on:
+      - unit-tests
+      - integration-tests
+    timeout: "15m"
+    retry:
+      max_retries: 1
+      initial_delay: "30s"
+      strategy: fixed
+
+  - id: deploy
+    name: Deploy to Staging
+    type: script
+    config:
+      command: kubectl
+      args:
+        - apply
+        - "-f"
+        - /workspace/src/deploy/k8s/
+        - "--namespace=staging"
+      working_dir: /workspace/src
+      env:
+        KUBECONFIG: /etc/kubernetes/kubeconfig
+    depends_on:
+      - build
+    condition: "params.branch == 'main' && params.deploy == true"
+    timeout: "10m"
+    retry:
+      max_retries: 2
+      initial_delay: "10s"
+      max_delay: "60s"
+      multiplier: 2.0
+      strategy: exponential
+
+on_failure:
+  action: notify
+  webhook: "${SLACK_WEBHOOK_URL}"
+  config:
+    channel: "#ci-alerts"
+    message: "CI pipeline failed for ${params.branch} at ${params.commit_sha}"

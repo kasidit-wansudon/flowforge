@@ -1,0 +1,204 @@
+# Multi-Channel Notification Workflow
+# Receive event -> Classify -> parallel(email, slack, sms) -> Log
+id: notification-flow
+name: Multi-Channel Notification
+description: >
+  Receives an event, classifies it by priority, then dispatches notifications
+  in parallel across email, Slack, and SMS channels based on the classification.
+  All notification results are logged for audit purposes.
+version: 1
+
+triggers:
+  - type: event
+    config:
+      pattern: "notifications.>"
+  - type: webhook
+    config:
+      path: /hooks/notify
+      secret: "${NOTIFICATION_WEBHOOK_SECRET}"
+      events:
+        - notification.send
+
+timeout: "10m"
+
+metadata:
+  team: platform
+  domain: notifications
+  owner: platform-team
+
+tasks:
+  - id: classify
+    name: Classify Event Priority
+    type: condition
+    config:
+      expression: "params.priority"
+      branches:
+        critical:
+          channels:
+            - email
+            - slack
+            - sms
+          escalate: true
+        high:
+          channels:
+            - email
+            - slack
+          escalate: false
+        medium:
+          channels:
+            - slack
+          escalate: false
+        low:
+          channels:
+            - slack
+          escalate: false
+      default:
+        channels:
+          - slack
+        escalate: false
+    timeout: "30s"
+
+  - id: send-email
+    name: Send Email Notification
+    type: http
+    config:
+      method: POST
+      url: "https://email.service.internal/api/v1/send"
+      headers:
+        Authorization: "Bearer ${secrets.EMAIL_SERVICE_KEY}"
+        Content-Type: "application/json"
+      body:
+        to: "${params.recipients.email}"
+        from: "notifications@flowforge.dev"
+        subject: "[${params.priority}] ${params.subject}"
+        template: "${params.email_template:-default-alert}"
+        variables:
+          title: "${params.subject}"
+          body: "${params.message}"
+          priority: "${params.priority}"
+          source: "${params.source}"
+          timestamp: "${run.started_at}"
+          action_url: "${params.action_url}"
+      timeout: "30s"
+      expected_status:
+        - 200
+        - 202
+    depends_on:
+      - classify
+    condition: "tasks.classify.output.channels contains 'email'"
+    timeout: "2m"
+    retry:
+      max_retries: 3
+      initial_delay: "5s"
+      max_delay: "30s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: send-slack
+    name: Send Slack Notification
+    type: http
+    config:
+      method: POST
+      url: "${secrets.SLACK_NOTIFICATION_WEBHOOK}"
+      headers:
+        Content-Type: "application/json"
+      body:
+        channel: "${params.slack_channel:-#alerts}"
+        username: FlowForge
+        icon_emoji: ":bell:"
+        attachments:
+          - color: "${params.priority == 'critical' ? '#FF0000' : params.priority == 'high' ? '#FFA500' : '#36A64F'}"
+            title: "${params.subject}"
+            text: "${params.message}"
+            fields:
+              - title: Priority
+                value: "${params.priority}"
+                short: true
+              - title: Source
+                value: "${params.source}"
+                short: true
+            footer: "FlowForge Notification | Run ${run.id}"
+            ts: "${run.started_at}"
+    depends_on:
+      - classify
+    condition: "tasks.classify.output.channels contains 'slack'"
+    timeout: "1m"
+    retry:
+      max_retries: 3
+      initial_delay: "2s"
+      max_delay: "15s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: send-sms
+    name: Send SMS Notification
+    type: http
+    config:
+      method: POST
+      url: "https://sms.service.internal/api/v1/send"
+      headers:
+        Authorization: "Bearer ${secrets.SMS_SERVICE_KEY}"
+        Content-Type: "application/json"
+      body:
+        to: "${params.recipients.sms}"
+        message: "[${params.priority}] ${params.subject}: ${params.message}"
+        callback_url: "https://flowforge.internal/hooks/sms-status/${run.id}"
+      timeout: "30s"
+      expected_status:
+        - 200
+        - 202
+    depends_on:
+      - classify
+    condition: "tasks.classify.output.channels contains 'sms'"
+    timeout: "2m"
+    retry:
+      max_retries: 2
+      initial_delay: "10s"
+      max_delay: "30s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: audit-log
+    name: Log Notification Results
+    type: http
+    config:
+      method: POST
+      url: "https://audit.service.internal/api/v1/events"
+      headers:
+        Authorization: "Bearer ${secrets.AUDIT_SERVICE_KEY}"
+        Content-Type: "application/json"
+      body:
+        event_type: notification.sent
+        run_id: "${run.id}"
+        workflow_id: notification-flow
+        priority: "${params.priority}"
+        subject: "${params.subject}"
+        channels_attempted:
+          - email: "${tasks.send-email.status:-skipped}"
+          - slack: "${tasks.send-slack.status:-skipped}"
+          - sms: "${tasks.send-sms.status:-skipped}"
+        timestamp: "${run.started_at}"
+        metadata:
+          source: "${params.source}"
+          recipients: "${params.recipients}"
+    depends_on:
+      - send-email
+      - send-slack
+      - send-sms
+    timeout: "2m"
+    retry:
+      max_retries: 3
+      initial_delay: "5s"
+      strategy: fixed
+
+on_failure:
+  action: notify
+  webhook: "${secrets.SLACK_PLATFORM_WEBHOOK}"
+  config:
+    channel: "#platform-alerts"
+    message: |
+      :warning: Notification delivery failed
+      Run: ${run.id}
+      Subject: ${params.subject}
+      Priority: ${params.priority}
+      Error: ${failed_task.error}

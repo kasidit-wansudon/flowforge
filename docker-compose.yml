@@ -1,0 +1,247 @@
+version: "3.9"
+
+x-common-env: &common-env
+  DATABASE_URL: postgres://flowforge:flowforge@postgres:5432/flowforge?sslmode=disable
+  REDIS_URL: redis://redis:6379/0
+  NATS_URL: nats://nats:4222
+  LOG_LEVEL: info
+  LOG_FORMAT: json
+
+services:
+  # ---------------------------------------------------------------------------
+  # FlowForge Server — API + UI
+  # ---------------------------------------------------------------------------
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+    image: flowforge/server:${VERSION:-latest}
+    container_name: flowforge-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # HTTP API + UI
+      - "9090:9090"   # gRPC
+      - "6060:6060"   # pprof / debug
+    environment:
+      <<: *common-env
+      FLOWFORGE_SERVER_HTTP_ADDR: "0.0.0.0:8080"
+      FLOWFORGE_SERVER_GRPC_ADDR: "0.0.0.0:9090"
+      FLOWFORGE_SERVER_DEBUG_ADDR: "0.0.0.0:6060"
+      FLOWFORGE_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - flowforge
+    volumes:
+      - server-data:/home/flowforge/data
+
+  # ---------------------------------------------------------------------------
+  # FlowForge Worker (scale: 3)
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+    image: flowforge/worker:${VERSION:-latest}
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    environment:
+      <<: *common-env
+      FLOWFORGE_WORKER_MAX_CONCURRENT: "10"
+      FLOWFORGE_WORKER_HEARTBEAT_INTERVAL: "15s"
+      FLOWFORGE_SERVER_GRPC_ADDR: server:9090
+    depends_on:
+      server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - flowforge
+    volumes:
+      - worker-data:/home/flowforge/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — primary data store
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: flowforge-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: flowforge
+      POSTGRES_USER: flowforge
+      POSTGRES_PASSWORD: flowforge
+      PGDATA: /var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowforge -d flowforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - flowforge
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  # ---------------------------------------------------------------------------
+  # Redis — caching, task queues, distributed locks
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: flowforge-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+        --appendonly yes
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1000
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - flowforge
+    volumes:
+      - redis-data:/data
+
+  # ---------------------------------------------------------------------------
+  # NATS — event streaming and pub/sub
+  # ---------------------------------------------------------------------------
+  nats:
+    image: nats:2.10-alpine
+    container_name: flowforge-nats
+    restart: unless-stopped
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # Monitoring
+    command: >
+      --jetstream
+      --store_dir=/data
+      --max_payload=8MB
+      --http_port=8222
+      --name=flowforge-nats
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - flowforge
+    volumes:
+      - nats-data:/data
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — metrics collection
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: flowforge-prometheus
+    restart: unless-stopped
+    ports:
+      - "9092:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      server:
+        condition: service_healthy
+    networks:
+      - flowforge
+
+  # ---------------------------------------------------------------------------
+  # Grafana — dashboards and visualization
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: flowforge-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "http://localhost:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - flowforge
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  flowforge:
+    driver: bridge
+    name: flowforge-network
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  server-data:
+    driver: local
+  worker-data:
+    driver: local
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  nats-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local

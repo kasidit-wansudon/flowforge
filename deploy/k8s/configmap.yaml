@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flowforge-config
+  namespace: flowforge
+  labels:
+    app.kubernetes.io/name: flowforge
+    app.kubernetes.io/part-of: flowforge
+data:
+  # Server configuration
+  log-level: "info"
+  log-format: "json"
+
+  # NATS (non-secret)
+  nats-url: "nats://flowforge-nats:4222"
+
+  # Worker configuration
+  worker-max-concurrent: "10"
+  worker-heartbeat-interval: "15s"
+
+  # Server addresses
+  server-http-addr: "0.0.0.0:8080"
+  server-grpc-addr: "0.0.0.0:9090"
+  server-debug-addr: "0.0.0.0:6060"
+
+  # Feature flags
+  feature-webhooks: "true"
+  feature-approval-tasks: "true"
+  feature-parallel-execution: "true"
+
+  # Retention
+  run-retention-days: "90"
+  log-retention-days: "30"
+
+  # Rate limiting
+  api-rate-limit: "100"
+  webhook-rate-limit: "50"

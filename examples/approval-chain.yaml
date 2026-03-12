@@ -1,0 +1,229 @@
+# Approval Chain Workflow
+# Submit -> Validate -> Approve (human) -> Conditional(approved->execute, rejected->notify) -> Complete
+id: approval-chain
+name: Approval Chain Workflow
+description: >
+  Multi-step approval workflow with human-in-the-loop approval, conditional
+  routing based on the approval decision, and proper timeout handling for
+  the approval step.
+version: 1
+
+triggers:
+  - type: webhook
+    config:
+      path: /hooks/approval
+      secret: "${APPROVAL_WEBHOOK_SECRET}"
+  - type: manual
+    config: {}
+
+timeout: "7d"
+
+metadata:
+  team: platform
+  domain: approvals
+  compliance: required
+  owner: governance-team
+
+tasks:
+  - id: submit
+    name: Submit Request
+    type: script
+    config:
+      command: /scripts/validate_submission.sh
+      args:
+        - "--request-id=${params.request_id}"
+        - "--requester=${params.requester}"
+        - "--type=${params.request_type}"
+        - "--data=${params.request_data}"
+      env:
+        REQUEST_DB_URL: "${secrets.REQUEST_DB_URL}"
+        LOG_LEVEL: INFO
+    timeout: "2m"
+    retry:
+      max_retries: 2
+      initial_delay: "5s"
+      strategy: fixed
+
+  - id: validate
+    name: Validate Request
+    type: script
+    config:
+      command: python3
+      args:
+        - /scripts/validate_request.py
+        - "--request-id=${params.request_id}"
+        - "--type=${params.request_type}"
+        - "--policy=/config/approval_policies.yaml"
+      env:
+        POLICY_ENGINE_URL: "${secrets.POLICY_ENGINE_URL}"
+        REQUEST_DB_URL: "${secrets.REQUEST_DB_URL}"
+    depends_on:
+      - submit
+    timeout: "5m"
+    retry:
+      max_retries: 2
+      initial_delay: "5s"
+      max_delay: "30s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: notify-approvers
+    name: Notify Approvers
+    type: http
+    config:
+      method: POST
+      url: "https://email.service.internal/api/v1/send"
+      headers:
+        Authorization: "Bearer ${secrets.EMAIL_SERVICE_KEY}"
+        Content-Type: "application/json"
+      body:
+        to: "${params.approvers}"
+        from: "approvals@flowforge.dev"
+        subject: "[Action Required] Approval Request: ${params.request_type}"
+        template: approval-request
+        variables:
+          request_id: "${params.request_id}"
+          requester: "${params.requester}"
+          request_type: "${params.request_type}"
+          summary: "${params.summary}"
+          approval_url: "https://flowforge.example.com/approvals/${run.id}"
+          deadline: "48h from now"
+    depends_on:
+      - validate
+    timeout: "2m"
+    retry:
+      max_retries: 3
+      initial_delay: "5s"
+      strategy: fixed
+
+  - id: approve
+    name: Await Human Approval
+    type: approval
+    config:
+      approvers: "${params.approvers}"
+      min_approvals: 1
+      approval_url: "https://flowforge.example.com/approvals/${run.id}"
+      notification:
+        reminder_interval: "12h"
+        max_reminders: 3
+      metadata:
+        request_id: "${params.request_id}"
+        request_type: "${params.request_type}"
+        requester: "${params.requester}"
+    depends_on:
+      - notify-approvers
+    timeout: "48h"
+    retry:
+      max_retries: 0
+
+  - id: route-decision
+    name: Route Based on Decision
+    type: condition
+    config:
+      expression: "tasks.approve.output.decision"
+      branches:
+        approved:
+          next: execute
+        rejected:
+          next: notify-rejection
+    depends_on:
+      - approve
+    timeout: "30s"
+
+  - id: execute
+    name: Execute Approved Action
+    type: script
+    config:
+      command: python3
+      args:
+        - /scripts/execute_request.py
+        - "--request-id=${params.request_id}"
+        - "--type=${params.request_type}"
+        - "--data=${params.request_data}"
+        - "--approved-by=${tasks.approve.output.approved_by}"
+        - "--approval-comment=${tasks.approve.output.comment}"
+      env:
+        EXECUTION_DB_URL: "${secrets.EXECUTION_DB_URL}"
+        LOG_LEVEL: INFO
+        AUDIT_ENABLED: "true"
+    depends_on:
+      - route-decision
+    condition: "tasks.approve.output.decision == 'approved'"
+    timeout: "30m"
+    retry:
+      max_retries: 2
+      initial_delay: "30s"
+      max_delay: "120s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: notify-rejection
+    name: Notify Requester of Rejection
+    type: http
+    config:
+      method: POST
+      url: "https://email.service.internal/api/v1/send"
+      headers:
+        Authorization: "Bearer ${secrets.EMAIL_SERVICE_KEY}"
+        Content-Type: "application/json"
+      body:
+        to:
+          - "${params.requester}"
+        from: "approvals@flowforge.dev"
+        subject: "[Rejected] Approval Request: ${params.request_type}"
+        template: approval-rejected
+        variables:
+          request_id: "${params.request_id}"
+          requester: "${params.requester}"
+          request_type: "${params.request_type}"
+          rejected_by: "${tasks.approve.output.approved_by}"
+          reason: "${tasks.approve.output.comment}"
+    depends_on:
+      - route-decision
+    condition: "tasks.approve.output.decision == 'rejected'"
+    timeout: "2m"
+    retry:
+      max_retries: 3
+      initial_delay: "5s"
+      strategy: fixed
+
+  - id: complete
+    name: Complete Workflow
+    type: http
+    config:
+      method: POST
+      url: "https://audit.service.internal/api/v1/events"
+      headers:
+        Authorization: "Bearer ${secrets.AUDIT_SERVICE_KEY}"
+        Content-Type: "application/json"
+      body:
+        event_type: approval.completed
+        run_id: "${run.id}"
+        request_id: "${params.request_id}"
+        request_type: "${params.request_type}"
+        requester: "${params.requester}"
+        decision: "${tasks.approve.output.decision}"
+        decided_by: "${tasks.approve.output.approved_by}"
+        comment: "${tasks.approve.output.comment}"
+        executed: "${tasks.execute.status == 'completed'}"
+        timestamp: "${run.started_at}"
+    depends_on:
+      - execute
+      - notify-rejection
+    timeout: "2m"
+    retry:
+      max_retries: 3
+      initial_delay: "5s"
+      strategy: fixed
+
+on_failure:
+  action: notify
+  webhook: "${secrets.SLACK_APPROVALS_WEBHOOK}"
+  config:
+    channel: "#approval-alerts"
+    message: |
+      :rotating_light: Approval workflow failed
+      Request ID: ${params.request_id}
+      Requester: ${params.requester}
+      Failed Task: ${failed_task.id}
+      Error: ${failed_task.error}

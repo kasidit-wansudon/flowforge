@@ -1,0 +1,396 @@
+syntax = "proto3";
+package flowforge.v1;
+option go_package = "github.com/kasidit-wansudon/flowforge/proto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum WorkflowStatus {
+  WORKFLOW_STATUS_UNSPECIFIED = 0;
+  WORKFLOW_STATUS_ACTIVE      = 1;
+  WORKFLOW_STATUS_INACTIVE    = 2;
+  WORKFLOW_STATUS_ARCHIVED    = 3;
+  WORKFLOW_STATUS_DRAFT       = 4;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING     = 1;
+  TASK_STATUS_QUEUED      = 2;
+  TASK_STATUS_RUNNING     = 3;
+  TASK_STATUS_COMPLETED   = 4;
+  TASK_STATUS_FAILED      = 5;
+  TASK_STATUS_CANCELLED   = 6;
+  TASK_STATUS_SKIPPED     = 7;
+  TASK_STATUS_RETRYING    = 8;
+  TASK_STATUS_TIMED_OUT   = 9;
+}
+
+enum TaskType {
+  TASK_TYPE_UNSPECIFIED = 0;
+  TASK_TYPE_HTTP        = 1;
+  TASK_TYPE_SCRIPT      = 2;
+  TASK_TYPE_CONDITION   = 3;
+  TASK_TYPE_PARALLEL    = 4;
+  TASK_TYPE_DELAY       = 5;
+  TASK_TYPE_PLUGIN      = 6;
+  TASK_TYPE_APPROVAL    = 7;
+  TASK_TYPE_NOTIFY      = 8;
+  TASK_TYPE_TRANSFORM   = 9;
+  TASK_TYPE_SUBFLOW     = 10;
+}
+
+enum TriggerType {
+  TRIGGER_TYPE_UNSPECIFIED = 0;
+  TRIGGER_TYPE_MANUAL      = 1;
+  TRIGGER_TYPE_CRON        = 2;
+  TRIGGER_TYPE_WEBHOOK     = 3;
+  TRIGGER_TYPE_EVENT       = 4;
+}
+
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  PRIORITY_LOW         = 1;
+  PRIORITY_MEDIUM      = 2;
+  PRIORITY_HIGH        = 3;
+  PRIORITY_CRITICAL    = 4;
+}
+
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_PENDING     = 1;
+  RUN_STATUS_RUNNING     = 2;
+  RUN_STATUS_COMPLETED   = 3;
+  RUN_STATUS_FAILED      = 4;
+  RUN_STATUS_CANCELLED   = 5;
+  RUN_STATUS_TIMED_OUT   = 6;
+}
+
+enum WorkerStatus {
+  WORKER_STATUS_UNSPECIFIED = 0;
+  WORKER_STATUS_IDLE        = 1;
+  WORKER_STATUS_BUSY        = 2;
+  WORKER_STATUS_DRAINING    = 3;
+  WORKER_STATUS_OFFLINE     = 4;
+}
+
+// =============================================================================
+// Core message types
+// =============================================================================
+
+message RetryPolicy {
+  int32                     max_retries   = 1;
+  google.protobuf.Duration  initial_delay = 2;
+  google.protobuf.Duration  max_delay     = 3;
+  double                    multiplier    = 4;
+  string                    strategy      = 5; // "fixed", "exponential", "linear"
+}
+
+message TriggerConfig {
+  TriggerType              type   = 1;
+  google.protobuf.Struct   config = 2;
+}
+
+message TaskDefinition {
+  string                   id         = 1;
+  string                   name       = 2;
+  TaskType                 type       = 3;
+  google.protobuf.Struct   config     = 4;
+  repeated string          depends_on = 5;
+  google.protobuf.Duration timeout    = 6;
+  RetryPolicy              retry      = 7;
+  string                   condition  = 8;
+  map<string, string>      metadata   = 9;
+}
+
+message Workflow {
+  string                          id          = 1;
+  string                          name        = 2;
+  string                          description = 3;
+  int32                           version     = 4;
+  WorkflowStatus                  status      = 5;
+  repeated TriggerConfig          triggers    = 6;
+  repeated TaskDefinition         tasks       = 7;
+  google.protobuf.Duration        timeout     = 8;
+  map<string, string>             metadata    = 9;
+  google.protobuf.Timestamp       created_at  = 10;
+  google.protobuf.Timestamp       updated_at  = 11;
+  string                          created_by  = 12;
+}
+
+message TaskResult {
+  string                   task_id     = 1;
+  TaskStatus               status      = 2;
+  bytes                    output      = 3;
+  string                   error       = 4;
+  google.protobuf.Duration duration    = 5;
+  int32                    retry_count = 6;
+  map<string, string>      metadata    = 7;
+}
+
+message Task {
+  string                          id           = 1;
+  string                          run_id       = 2;
+  string                          workflow_id  = 3;
+  string                          task_def_id  = 4;
+  string                          name         = 5;
+  TaskType                        type         = 6;
+  TaskStatus                      status       = 7;
+  google.protobuf.Struct          config       = 8;
+  google.protobuf.Struct          input        = 9;
+  bytes                           output       = 10;
+  string                          error        = 11;
+  string                          worker_id    = 12;
+  int32                           retry_count  = 13;
+  int32                           max_retries  = 14;
+  Priority                        priority     = 15;
+  google.protobuf.Timestamp       created_at   = 16;
+  google.protobuf.Timestamp       started_at   = 17;
+  google.protobuf.Timestamp       completed_at = 18;
+  google.protobuf.Duration        timeout      = 19;
+  map<string, string>             metadata     = 20;
+}
+
+message Run {
+  string                          id          = 1;
+  string                          workflow_id = 2;
+  int32                           version     = 3;
+  RunStatus                       status      = 4;
+  TriggerType                     trigger     = 5;
+  google.protobuf.Struct          params      = 6;
+  repeated TaskResult             results     = 7;
+  google.protobuf.Timestamp       created_at  = 8;
+  google.protobuf.Timestamp       started_at  = 9;
+  google.protobuf.Timestamp       completed_at = 10;
+  string                          error       = 11;
+  map<string, string>             metadata    = 12;
+}
+
+message Worker {
+  string                          id             = 1;
+  string                          hostname       = 2;
+  WorkerStatus                    status         = 3;
+  repeated string                 capabilities   = 4;
+  int32                           max_concurrent = 5;
+  int32                           active_tasks   = 6;
+  google.protobuf.Timestamp       registered_at  = 7;
+  google.protobuf.Timestamp       last_heartbeat = 8;
+  string                          version        = 9;
+  map<string, string>             labels         = 10;
+}
+
+message LogEntry {
+  string                          id        = 1;
+  string                          run_id    = 2;
+  string                          task_id   = 3;
+  string                          level     = 4; // "debug", "info", "warn", "error"
+  string                          message   = 5;
+  google.protobuf.Timestamp       timestamp = 6;
+  map<string, string>             fields    = 7;
+}
+
+// =============================================================================
+// WorkflowService
+// =============================================================================
+
+service WorkflowService {
+  rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
+  rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+  rpc UpdateWorkflow(UpdateWorkflowRequest) returns (UpdateWorkflowResponse);
+  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (DeleteWorkflowResponse);
+  rpc TriggerWorkflow(TriggerWorkflowRequest) returns (TriggerWorkflowResponse);
+}
+
+message CreateWorkflowRequest {
+  string                          name        = 1;
+  string                          description = 2;
+  repeated TriggerConfig          triggers    = 3;
+  repeated TaskDefinition         tasks       = 4;
+  google.protobuf.Duration        timeout     = 5;
+  map<string, string>             metadata    = 6;
+}
+
+message CreateWorkflowResponse {
+  Workflow workflow = 1;
+}
+
+message GetWorkflowRequest {
+  string id      = 1;
+  int32  version = 2; // 0 = latest
+}
+
+message GetWorkflowResponse {
+  Workflow workflow = 1;
+}
+
+message ListWorkflowsRequest {
+  int32           page_size   = 1;
+  string          page_token  = 2;
+  WorkflowStatus  status      = 3;
+  string          name_filter = 4;
+}
+
+message ListWorkflowsResponse {
+  repeated Workflow workflows       = 1;
+  string           next_page_token  = 2;
+  int32            total_count      = 3;
+}
+
+message UpdateWorkflowRequest {
+  string                          id          = 1;
+  string                          name        = 2;
+  string                          description = 3;
+  repeated TriggerConfig          triggers    = 4;
+  repeated TaskDefinition         tasks       = 5;
+  google.protobuf.Duration        timeout     = 6;
+  map<string, string>             metadata    = 7;
+  WorkflowStatus                  status      = 8;
+}
+
+message UpdateWorkflowResponse {
+  Workflow workflow = 1;
+}
+
+message DeleteWorkflowRequest {
+  string id = 1;
+}
+
+message DeleteWorkflowResponse {
+  bool deleted = 1;
+}
+
+message TriggerWorkflowRequest {
+  string                   id     = 1;
+  google.protobuf.Struct   params = 2;
+  Priority                 priority = 3;
+  map<string, string>      metadata = 4;
+}
+
+message TriggerWorkflowResponse {
+  Run run = 1;
+}
+
+// =============================================================================
+// TaskService
+// =============================================================================
+
+service TaskService {
+  rpc SubmitTask(SubmitTaskRequest) returns (SubmitTaskResponse);
+  rpc ClaimTask(ClaimTaskRequest) returns (ClaimTaskResponse);
+  rpc CompleteTask(CompleteTaskRequest) returns (CompleteTaskResponse);
+  rpc FailTask(FailTaskRequest) returns (FailTaskResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message SubmitTaskRequest {
+  string                          run_id      = 1;
+  string                          task_def_id = 2;
+  TaskType                        type        = 3;
+  google.protobuf.Struct          config      = 4;
+  google.protobuf.Struct          input       = 5;
+  Priority                        priority    = 6;
+  google.protobuf.Duration        timeout     = 7;
+  int32                           max_retries = 8;
+  map<string, string>             metadata    = 9;
+}
+
+message SubmitTaskResponse {
+  Task task = 1;
+}
+
+message ClaimTaskRequest {
+  string          worker_id    = 1;
+  repeated string capabilities = 2;
+  int32           max_tasks    = 3;
+}
+
+message ClaimTaskResponse {
+  repeated Task tasks = 1;
+}
+
+message CompleteTaskRequest {
+  string              task_id   = 1;
+  string              worker_id = 2;
+  bytes               output    = 3;
+  map<string, string> metadata  = 4;
+}
+
+message CompleteTaskResponse {
+  Task task = 1;
+}
+
+message FailTaskRequest {
+  string              task_id   = 1;
+  string              worker_id = 2;
+  string              error     = 3;
+  bool                retryable = 4;
+  map<string, string> metadata  = 5;
+}
+
+message FailTaskResponse {
+  Task task   = 1;
+  bool  retry = 2;
+}
+
+message HeartbeatRequest {
+  string          worker_id    = 1;
+  repeated string active_tasks = 2;
+  double          cpu_usage    = 3;
+  double          memory_usage = 4;
+}
+
+message HeartbeatResponse {
+  bool            accepted        = 1;
+  repeated string cancel_tasks    = 2; // tasks the server wants cancelled
+  bool            should_drain    = 3;
+}
+
+// =============================================================================
+// WorkerService
+// =============================================================================
+
+service WorkerService {
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  rpc DeregisterWorker(DeregisterWorkerRequest) returns (DeregisterWorkerResponse);
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+}
+
+message RegisterWorkerRequest {
+  string              hostname       = 1;
+  repeated string     capabilities   = 2;
+  int32               max_concurrent = 3;
+  string              version        = 4;
+  map<string, string> labels         = 5;
+}
+
+message RegisterWorkerResponse {
+  Worker                    worker             = 1;
+  google.protobuf.Duration  heartbeat_interval = 2;
+}
+
+message DeregisterWorkerRequest {
+  string worker_id = 1;
+  bool   drain     = 2; // true = finish active tasks first
+}
+
+message DeregisterWorkerResponse {
+  bool deregistered = 1;
+}
+
+message ListWorkersRequest {
+  WorkerStatus status    = 1;
+  int32        page_size = 2;
+  string       page_token = 3;
+}
+
+message ListWorkersResponse {
+  repeated Worker workers         = 1;
+  string          next_page_token = 2;
+  int32           total_count     = 3;
+}

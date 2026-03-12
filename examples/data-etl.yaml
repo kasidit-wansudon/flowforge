@@ -1,0 +1,163 @@
+# Data ETL Pipeline Workflow
+# Extract (HTTP GET) -> Validate -> Transform (script) -> Load (HTTP POST) -> Notify
+id: data-etl-pipeline
+name: Data ETL Pipeline
+description: >
+  Extract-Transform-Load pipeline that fetches data from an external API,
+  validates the payload, transforms it with a Python script, loads it into
+  the data warehouse, and sends a completion notification.
+version: 1
+
+triggers:
+  - type: cron
+    config:
+      schedule: "0 2 * * *"
+      timezone: "UTC"
+  - type: manual
+    config: {}
+
+timeout: "1h"
+
+metadata:
+  team: data-engineering
+  domain: analytics
+  sla: "4h"
+  owner: data-team
+
+tasks:
+  - id: extract
+    name: Extract Data from API
+    type: http
+    config:
+      method: GET
+      url: "https://api.datasource.example.com/v2/records"
+      headers:
+        Authorization: "Bearer ${secrets.DATA_SOURCE_API_KEY}"
+        Accept: "application/json"
+        X-Request-ID: "${run.id}"
+      query_params:
+        since: "${params.start_date}"
+        until: "${params.end_date}"
+        limit: "10000"
+        format: json
+      timeout: "120s"
+      expected_status:
+        - 200
+      output_path: /workspace/data/raw/extract.json
+    timeout: "10m"
+    retry:
+      max_retries: 3
+      initial_delay: "10s"
+      max_delay: "120s"
+      multiplier: 3.0
+      strategy: exponential
+
+  - id: validate
+    name: Validate Extracted Data
+    type: script
+    config:
+      command: python3
+      args:
+        - /scripts/validate_data.py
+        - "--input=/workspace/data/raw/extract.json"
+        - "--schema=/schemas/records.json"
+        - "--min-records=1"
+        - "--max-errors=10"
+        - "--output=/workspace/data/validated/result.json"
+      env:
+        LOG_LEVEL: INFO
+        VALIDATION_MODE: strict
+    depends_on:
+      - extract
+    timeout: "5m"
+    retry:
+      max_retries: 1
+      initial_delay: "5s"
+      strategy: fixed
+
+  - id: transform
+    name: Transform Data
+    type: script
+    config:
+      command: python3
+      args:
+        - /scripts/transform_data.py
+        - "--input=/workspace/data/validated/result.json"
+        - "--output=/workspace/data/transformed/output.json"
+        - "--mapping=/config/field_mapping.yaml"
+        - "--enrich=true"
+        - "--deduplicate=true"
+      env:
+        LOG_LEVEL: INFO
+        TRANSFORM_VERSION: "2.1"
+        ENRICHMENT_API: "https://enrich.example.com/v1"
+        ENRICHMENT_KEY: "${secrets.ENRICHMENT_API_KEY}"
+    depends_on:
+      - validate
+    timeout: "15m"
+    retry:
+      max_retries: 2
+      initial_delay: "15s"
+      max_delay: "60s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: load
+    name: Load Data to Warehouse
+    type: http
+    config:
+      method: POST
+      url: "https://warehouse.example.com/api/v1/ingest"
+      headers:
+        Authorization: "Bearer ${secrets.WAREHOUSE_API_KEY}"
+        Content-Type: "application/json"
+        X-Pipeline-Run: "${run.id}"
+        X-Idempotency-Key: "${run.id}-load"
+      body_file: /workspace/data/transformed/output.json
+      timeout: "300s"
+      expected_status:
+        - 200
+        - 201
+        - 202
+    depends_on:
+      - transform
+    timeout: "15m"
+    retry:
+      max_retries: 3
+      initial_delay: "30s"
+      max_delay: "300s"
+      multiplier: 2.0
+      strategy: exponential
+
+  - id: notify-success
+    name: Send Completion Notification
+    type: notify
+    config:
+      channel: slack
+      webhook: "${secrets.SLACK_DATA_WEBHOOK}"
+      template: |
+        :white_check_mark: *ETL Pipeline Completed*
+        - Run ID: `${run.id}`
+        - Date Range: ${params.start_date} to ${params.end_date}
+        - Records Processed: ${tasks.transform.output.record_count}
+        - Duration: ${run.duration}
+      mention: "@data-team"
+    depends_on:
+      - load
+    timeout: "2m"
+    retry:
+      max_retries: 2
+      initial_delay: "5s"
+      strategy: fixed
+
+on_failure:
+  action: notify
+  webhook: "${secrets.SLACK_DATA_WEBHOOK}"
+  config:
+    channel: "#data-alerts"
+    message: |
+      :x: ETL Pipeline Failed
+      Run ID: ${run.id}
+      Failed Task: ${failed_task.id}
+      Error: ${failed_task.error}
+    mention: "@data-oncall"

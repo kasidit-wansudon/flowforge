@@ -216,13 +216,22 @@ func TestHalfOpenExceedsMaxRequests(t *testing.T) {
 	// Advance to half-open.
 	currentTime = now.Add(2 * time.Second)
 
-	// First request goes through (probe).
-	cb.beforeRequest()
+	// Transition to half-open and consume the slot by calling beforeRequest
+	// which transitions from Open -> HalfOpen, then call beforeRequest again
+	// which sees HalfOpen and increments halfOpenCount to 1.
+	err1 := cb.beforeRequest() // Open -> HalfOpen transition, halfOpenCount stays 0
+	if err1 != nil {
+		t.Fatalf("first beforeRequest() = %v, want nil", err1)
+	}
+	err2 := cb.beforeRequest() // HalfOpen, halfOpenCount 0 -> 1 (allowed)
+	if err2 != nil {
+		t.Fatalf("second beforeRequest() = %v, want nil", err2)
+	}
 
-	// Second request should be rejected (half-open max requests = 1).
-	err := cb.Execute(func() error { return nil })
+	// Third request should be rejected (half-open max requests = 1, slot consumed).
+	err := cb.beforeRequest()
 	if !errors.Is(err, ErrCircuitOpen) {
-		t.Errorf("Execute() err = %v, want ErrCircuitOpen (max half-open requests exceeded)", err)
+		t.Errorf("beforeRequest() err = %v, want ErrCircuitOpen (max half-open requests exceeded)", err)
 	}
 }
 

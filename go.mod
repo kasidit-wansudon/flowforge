@@ -9,6 +9,7 @@ require (
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/nats-io/nats.go v1.36.0
 	github.com/prometheus/client_golang v1.20.2
+	github.com/prometheus/client_model v0.6.1
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
@@ -31,7 +32,6 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nats-io/nkeys v0.4.7 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
-	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
